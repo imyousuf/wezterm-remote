@@ -6,12 +6,16 @@ Existing panes work immediately through `wezterm cli`: the browser receives scre
 
 ## Build and run
 
-Requires Linux, Go 1.24 or newer, and a running WezTerm GUI belonging to the same user. `wezterm` must be on `PATH`.
+Requires Go 1.24 or newer, Make, and a running WezTerm GUI belonging to the same user. `wezterm` must be on `PATH`. Linux is integration-tested. Linux and macOS binaries are built for amd64 and arm64; macOS GUI integration remains unverified. Windows hosts are unsupported because the shim requires POSIX PTYs and signals. Windows browsers can connect to a supported host.
+
+Without Make, run `go build -o bin/wezrelay ./cmd/wezrelay`.
 
 ```bash
-go build -o wezrelay .
-./wezrelay serve
+make build
+./bin/wezrelay serve
 ```
+
+Existing panes require no WezTerm configuration changes or session restarts.
 
 Open **http://127.0.0.1:12620/** to connect without a token. Choose an existing pane from the dropdown, then type directly into the terminal. **+ View tab** opens another application tab; each view remembers its selected pane and can choose any discovered pane from the dropdown. Close a view with **×**. Only the active view renders a terminal and opens a WebSocket; discovery does not activate other panes. Switching views reconnects to the selected pane using its snapshot or bounded live replay. **+ Terminal tab** creates an actual WezTerm tab in the selected pane’s desktop window. Existing CLI agents do not need restarting. `LIVE` marks streaming shim panes; `SNAPSHOT` marks existing panes polled every 250 ms. Snapshot mode supports input but does not reproduce full terminal state, mouse behavior or cursor placement as accurately as a PTY stream.
 
@@ -25,7 +29,7 @@ The default listener is **:12620**, covering all desktop network interfaces. Ope
 
 The application serves HTTP. You can optionally use `tailscale serve --bg http://127.0.0.1:12620` for a Tailscale HTTPS URL; this proxy deployment path has not been exercised by this repository's integration checks. WebSocket and mutation origins must match the request host, including when using the desktop's Tailscale address. Configure reverse proxies to preserve the original Host header.
 
-## Full streaming for new panes
+## Optional full streaming for new panes
 
 Build/install the binary at a stable absolute path, then merge this into your existing WezTerm Lua configuration (do not replace your other settings):
 
@@ -35,17 +39,30 @@ config.default_prog = { '/absolute/path/to/wezrelay', 'shim' }
 
 New tabs and splits launch your `$SHELL` as a login shell inside a PTY. `shim -shell /bin/bash` selects another executable. Local raw terminal settings are restored on exit, desktop resize signals propagate, and shims reconnect if the server restarts. Browser reconnects replay up to 64 KiB of recent ANSI output; this is bounded history, not a complete terminal screen-state emulator. Output produced while the server is absent is not replayed.
 
-Both modes accept `-sock PATH` (default `/tmp/wezrelay-<uid>.sock`). The server creates its socket with mode 0600 and refuses any existing path; if an unclean exit leaves a stale socket, verify no server owns it before removing it manually. Never share this socket with other users. `WEZTERM_UNIX_SOCKET` selects a WezTerm GUI; otherwise the newest GUI socket under `/run/user/<uid>/wezterm/` is used.
+Both modes accept `-sock PATH` (default `/tmp/wezrelay-<uid>.sock`). The server creates its socket with mode 0600 and refuses any existing path; if an unclean exit leaves a stale socket, verify no server owns it before removing it manually. Never share this socket with other users. `WEZTERM_UNIX_SOCKET` selects a WezTerm GUI; otherwise the newest GUI socket under `/run/user/<uid>/wezterm/` is used on Linux. If no socket is found, discovery is left to `wezterm cli`; on macOS, set `WEZTERM_UNIX_SOCKET` explicitly if necessary.
 
 ## Development and validation
 
 ```bash
-go build ./...
-go test ./...
-go test -race ./...
-go vet ./...
-node --check web/app.js
+make check       # formatting, vet, race tests, build, JavaScript syntax (needs Node)
+make test        # Go tests only
+make build-all   # Linux/macOS amd64/arm64 archives and SHA-256 checksums in dist/
+make install     # install wezrelay into GOBIN or GOPATH/bin
+make clean       # remove bin/ and dist/
+make help
 ```
+
+The Go commands `go build ./...`, `go test ./...`, `go test -race ./...` and `go vet ./...` also work from the module root. Cross-compilation uses `CGO_ENABLED=0` and requires no platform C toolchain. Archives contain the executable, README and AGPL license. Check downloads with `sha256sum --check checksums.txt` (or `shasum -a 256 --check checksums.txt` on macOS).
+
+Application layout:
+
+- `cmd/wezrelay/`: executable entry point.
+- `internal/relay/`: command handling, server, PTY shim, protocol and Go tests.
+- `web/`: embedded offline assets and their small Go embedding package.
+- `tests/`: optional browser regression harness.
+- `doc/`: historical design and prototype references.
+
+[GitHub Actions](.github/workflows/ci.yml) checks Go and PTY tests on Linux and macOS, then packages all four targets on every branch push and pull request. Successful pushes to `main` also move the rolling `dev` tag and update its prerelease assets and checksums. The release notes identify the exact source commit. The dev release is never marked latest; non-main pushes and pull requests cannot publish. This uses the repository's built-in `GITHUB_TOKEN`, with write permission only in the release job; no personal token is needed. Repository rules must permit Actions to update the `dev` tag and release. Manual workflow runs check/package without publishing. CI does not run the real WezTerm GUI or browser harness.
 
 The optional `python3 tests/mobile_browser.py --run` browser regression check requires an already running ATR browser. It opens a dedicated mobile fixture tab with fake panes and sockets, tests initial tail position, scrollback, simulated keyboard viewport/focus recovery, horizontal panning and explicit fit/restoration, and leaves the test tab open. It does not exercise a native phone keyboard.
 

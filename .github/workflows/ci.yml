@@ -1,0 +1,111 @@
+name: CI and development release
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize main publications; do not cancel a release halfway through updating
+# its tag/assets. Feature branches and PRs can cancel superseded checks.
+concurrency:
+  group: wezrelay-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  check:
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - run: make check
+
+  package:
+    name: Package Linux and macOS binaries
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: make build-all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wezrelay-binaries
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Update rolling dev prerelease
+    needs: package
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wezrelay-binaries
+          path: dist
+      - name: Publish verified artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check checksums.txt
+          cat > release-notes.md <<EOF_NOTES
+          Automated development build from main.
+
+          Commit: $COMMIT
+
+          Download wezrelay-<os>-<arch>.tar.gz, check it against checksums.txt,
+          and extract the wezrelay executable. Browser assets are embedded.
+          Requires a local WezTerm GUI. Linux is integration-tested; macOS
+          binaries have automated Go/PTY tests but GUI integration is unverified.
+          On macOS set WEZTERM_UNIX_SOCKET if automatic WezTerm discovery fails.
+          Windows hosts are unsupported (POSIX PTYs and signals required).
+
+          This rolling prerelease is replaced after successful pushes to main.
+          Source for this build: https://github.com/$GH_REPO/tree/$COMMIT
+          EOF_NOTES
+          # Create or move only the dedicated rolling development tag. Never
+          # delete stable releases/tags, and fail on unexpected API errors.
+          if gh api "repos/$GH_REPO/git/matching-refs/tags/dev" --jq '.[].ref' | grep -qx 'refs/tags/dev'; then
+            gh api --method PATCH "repos/$GH_REPO/git/refs/tags/dev" -f sha="$COMMIT" -F force=true
+          else
+            gh api --method POST "repos/$GH_REPO/git/refs" -f ref=refs/tags/dev -f sha="$COMMIT"
+          fi
+          if gh release list --limit 1000 --json tagName --jq '.[].tagName' | grep -qx dev; then
+            gh release upload dev wezrelay-*.tar.gz checksums.txt --clobber
+            gh release edit dev --title "Development build (${COMMIT:0:7})" --notes-file release-notes.md --prerelease --latest=false
+          else
+            gh release create dev wezrelay-*.tar.gz checksums.txt --verify-tag --title "Development build (${COMMIT:0:7})" --notes-file release-notes.md --prerelease --latest=false
+          fi

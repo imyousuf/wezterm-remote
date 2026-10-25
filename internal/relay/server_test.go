@@ -1,10 +1,9 @@
-package main
+package relay
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"github.com/gorilla/websocket"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 func testSession() *shimSession { return &shimSession{subs: make(map[*subscription]struct{})} }
@@ -38,7 +39,7 @@ func TestHistorySubscriptionOrderingAndSlowClient(t *testing.T) {
 	s.unsubscribe(sub)
 }
 func TestUnixSocketRefusesExistingPaths(t *testing.T) {
-	dir := t.TempDir()
+	dir := socketTestDir(t)
 	path := filepath.Join(dir, "hub.sock")
 	if err := os.WriteFile(path, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
@@ -267,5 +268,20 @@ func TestSpawnInSelectedPaneWindow(t *testing.T) {
 	s.handler().ServeHTTP(w, httptest.NewRequest("POST", "/api/spawn?wez_pane_id=bad", nil))
 	if w.Code != 400 {
 		t.Fatalf("invalid pane status %d", w.Code)
+	}
+}
+
+// Moving the embed package must preserve public URLs, including vendored assets
+// needed when the browser has no internet connection.
+func TestEmbeddedBrowserAssets(t *testing.T) {
+	handler := newRelayServer("").handler()
+	for _, path := range []string{"/", "/app.js", "/style.css", "/vendor/xterm-xterm.js", "/vendor/xterm-xterm.css", "/vendor/addon-fit-addon-fit.js"} {
+		t.Run(path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+			if response.Code != http.StatusOK || response.Body.Len() == 0 {
+				t.Fatalf("embedded asset %s: status %d, body length %d", path, response.Code, response.Body.Len())
+			}
+		})
 	}
 }

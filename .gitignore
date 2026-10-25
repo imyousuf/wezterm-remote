@@ -1,3 +1,5 @@
 /wezrelay
 *.test
 /wezterm-remote
+/bin/
+/dist/

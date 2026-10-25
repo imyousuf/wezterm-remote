@@ -1,4 +1,4 @@
-package main
+package relay
 
 import (
 	"encoding/binary"
@@ -16,7 +16,7 @@ import (
 
 func TestServeAllowsNoToken(t *testing.T) {
 	t.Setenv("WEZRELAY_TOKEN", "")
-	if err := run([]string{"serve", "-sock", filepath.Join(t.TempDir(), "missing", "relay.sock")}); !errors.Is(err, os.ErrNotExist) {
+	if err := Run([]string{"serve", "-sock", filepath.Join(t.TempDir(), "missing", "relay.sock")}); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected socket creation error after accepting empty token, got %v", err)
 	}
 }
@@ -30,7 +30,7 @@ func TestShimPTY(t *testing.T) {
 		}
 		os.Exit(0)
 	}
-	path := filepath.Join(t.TempDir(), "relay.sock")
+	path := filepath.Join(socketTestDir(t), "relay.sock")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
@@ -100,4 +100,16 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// Keep Unix socket names below macOS's sockaddr_un limit, including when its
+// default temporary directory already has a long /var/folders prefix.
+func socketTestDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "wr-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return dir
 }

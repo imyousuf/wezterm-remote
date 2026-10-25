@@ -4,7 +4,7 @@
 
 `wezterm-remote`, called **WezRelay** in its design, aims to expose native WezTerm terminal panes on an Ubuntu desktop to desktop and mobile browsers over LAN and Tailscale. Preserve local WezTerm interaction and native tabs/splits; do not introduce a `tmux` dependency.
 
-This repository contains a root Go application, embedded browser UI under `web/`, tests, and historical design/reference material under `doc/`. See README for current build/run commands and verified limitations; do not describe design goals as verified features. No CI configuration is provided.
+This repository contains a Go command under `cmd/wezrelay/`, implementation and Go tests under `internal/relay/`, embedded browser UI under `web/`, browser tests, and historical design/reference material under `doc/`. See README for current build/run commands and verified limitations; do not describe design goals as verified features. GitHub Actions checks Linux/macOS, builds cross-platform archives, and updates a rolling dev prerelease on successful main pushes.
 
 Read these files before implementation:
 
@@ -33,7 +33,7 @@ Treat the guide as design intent and the samples as reference code. Resolve disc
 
 ## Validation
 
-For documentation changes, check relative links, filenames, commands, and feature claims against the samples. No automated documentation checks are currently configured. Root Go checks are `go build ./...`, `go test ./...`, `go test -race ./...`, and `go vet ./...`; the historical Go sample is excluded with a build tag.
+For documentation changes, check relative links, filenames, commands, and feature claims against the samples. No automated documentation checks are currently configured. `make check` runs formatting, Go vet/race tests/build, and JavaScript syntax checks; `make build-all` produces Linux/macOS archives and checksums. Root module Go checks are `go build ./...`, `go test ./...`, `go test -race ./...`, and `go vet ./...`; the historical Go sample is excluded with a build tag.
 
 To compile the reference sample, copy the Go file as `main.go` and the HTML file as `index.html` into an isolated temporary directory, initialize a module there, and resolve the three dependencies listed in the README. Avoid creating incidental module files or binaries in this repository. Dependency resolution is currently unpinned; report the Go/dependency versions used if a build is performed.
 

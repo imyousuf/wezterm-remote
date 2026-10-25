@@ -1,4 +1,4 @@
-package main
+package relay
 
 import (
 	"bytes"
@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -26,6 +25,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/imyousuf/wezterm-remote/web"
 )
 
 const historyLimit = 64 * 1024
@@ -288,11 +289,7 @@ func (s *relayServer) handler() http.Handler {
 			}
 		})
 	}
-	webFS, err := fs.Sub(assets, "web")
-	if err != nil {
-		panic(err)
-	}
-	mux.Handle("/", http.FileServer(http.FS(webFS)))
+	mux.Handle("/", http.FileServer(http.FS(web.Assets)))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set("X-Content-Type-Options", "nosniff")

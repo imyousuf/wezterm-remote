@@ -1,24 +1,15 @@
-// WezRelay exposes native WezTerm panes through a browser.
-package main
+// Package relay implements the WezRelay server and PTY shim.
+package relay
 
 import (
-	"embed"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 )
 
-//go:embed web
-var assets embed.FS
-
-func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "wezrelay:", err)
-		os.Exit(1)
-	}
-}
-func run(args []string) error {
+// Run executes a serve or shim command.
+func Run(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: wezrelay serve [-addr :12620] [-token TOKEN] | shim [-shell PATH] [-sock PATH]")
 	}
