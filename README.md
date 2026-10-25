@@ -1,64 +1,60 @@
-# wezterm-remote (WezRelay)
+# WezRelay
 
-WezRelay aims to make native WezTerm sessions on an Ubuntu desktop accessible from desktop and mobile browsers over LAN or Tailscale. The goal is two-way interaction with shells and rich terminal applications such as Claude Code, Codex CLI, and Antigravity (`agvty`), while keeping WezTerm's tabs and split panes and requiring no `tmux`.
+Access your native WezTerm desktop panes from a desktop or mobile browser, including already-running terminal CLI agents. WezRelay is a Linux Go application with an embedded, offline browser UI. It uses native WezTerm tabs and splits, with no tmux dependency.
 
-**Status:** design and reference prototype. The repository contains an architecture guide and sample Go server/PTY shim and browser UI under `doc/`. There is no root Go module, packaged application, automated test suite, or release workflow yet. Features described below are prototype behavior or design goals, not verified production guarantees.
+Existing panes work immediately through `wezterm cli`: the browser receives screen snapshots and sends keyboard input to the real pane. For full PTY output streaming, start new panes through `wezrelay shim`. The desktop and browser can both type into the same shell.
 
-## Design
+## Build and run
 
-The proposed application is a single Go binary with an embedded HTML client and two cooperating modes:
-
-- `wezrelay shim` runs inside a WezTerm pane, starts a login shell in a PTY, and forwards output to both the local terminal and the server. Input can come from either the local terminal or a browser.
-- `wezrelay serve` combines shim sessions with pane metadata from `wezterm cli`, serves the browser UI, and relays terminal traffic over WebSockets. Shim connections use a per-user Unix socket, `/tmp/wezrelay-<uid>.sock`, and each session keeps up to 64 KiB of recent output for reconnecting clients.
-- Panes opened without a shim use a fallback that polls `wezterm cli get-text` and sends input with `wezterm cli send-text`. This is a snapshot-based fallback rather than a full PTY stream.
-
-The sample UI includes a desktop pane grid, a mobile pane switcher, a touch keybar, and controls to create actual WezTerm splits and tabs. **Match Desktop** preserves reported desktop terminal dimensions by default; **Fit Browser** requests remote resizing for shim panes. Its grid arranges panes responsively; it does not reconstruct the exact desktop split geometry. Shift+Enter sends an escape-plus-carriage-return sequence whose behavior should be checked with the target application.
-
-## Repository guide
-
-| Path | Purpose |
-| --- | --- |
-| [Architecture and setup guide](doc/wezrelay_architecture_setup_guide.md) | Project intent, proposed architecture, deployment sketches, and roadmap |
-| [Go prototype](doc/sample_code/wezrelay_server_pty_shim.go) | Server, Unix socket protocol, PTY shim, and WezTerm CLI fallback |
-| [Browser prototype](doc/sample_code/wezrelay_web_mobile_ui.html) | HTML/CSS/JavaScript client using xterm.js |
-| [AGENTS.md](AGENTS.md) | Guidance for contributors working with coding agents |
-| [LICENSE](LICENSE) | GNU Affero General Public License, version 3 |
-
-## Try the reference prototype
-
-Prerequisites are Ubuntu/Linux, Go, WezTerm with a running GUI session, and a browser. Run the server as the same user as WezTerm, with `wezterm` on `PATH`. The sample uses `github.com/creack/pty`, `github.com/gorilla/websocket`, and `golang.org/x/term`; dependency versions are not pinned in this repository. The browser fetches xterm.js and its fit addon from jsDelivr, so the prototype also needs access to that CDN.
-
-The Go file embeds `index.html`; the sample files must first be copied under the expected names. From the repository root, build in a separate temporary directory:
+Requires Linux, Go 1.24 or newer, and a running WezTerm GUI belonging to the same user. `wezterm` must be on `PATH`.
 
 ```bash
-prototype_dir=$(mktemp -d)
-cp doc/sample_code/wezrelay_server_pty_shim.go "$prototype_dir/main.go"
-cp doc/sample_code/wezrelay_web_mobile_ui.html "$prototype_dir/index.html"
-cd "$prototype_dir"
-go mod init wezrelay
-go get github.com/creack/pty github.com/gorilla/websocket golang.org/x/term
 go build -o wezrelay .
-WEZRELAY_TOKEN='replace-with-a-private-token' ./wezrelay serve -addr 127.0.0.1:8080
+./wezrelay serve
 ```
 
-Open `http://127.0.0.1:8080/?token=replace-with-a-private-token`. Existing WezTerm panes are discovered through the CLI fallback. The server uses `WEZTERM_UNIX_SOCKET` when set, otherwise it looks for the newest GUI socket under `/run/user/<uid>/wezterm/`.
+Open **http://127.0.0.1:12620/** to connect without a token. Choose an existing pane from the dropdown, then type directly into the terminal. **+ View tab** opens another application tab; each view remembers its selected pane and can choose any discovered pane from the dropdown. Close a view with **×**. Only the active view renders a terminal and opens a WebSocket; discovery does not activate other panes. Switching views reconnects to the selected pane using its snapshot or bounded live replay. **+ Terminal tab** creates an actual WezTerm tab in the selected pane’s desktop window. Existing CLI agents do not need restarting. `LIVE` marks streaming shim panes; `SNAPSHOT` marks existing panes polled every 250 ms. Snapshot mode supports input but does not reproduce full terminal state, mouse behavior or cursor placement as accurately as a PTY stream.
 
-For PTY streaming in newly opened panes, copy the built binary to a stable location and merge this setting into your existing `~/.config/wezterm/wezterm.lua` configuration, using its absolute path:
+The default view preserves desktop dimensions. On smaller displays, swipe sideways across the terminal or use its horizontal position slider and pan buttons to read wide output; vertical swipes retain terminal scrolling. These viewing controls do not resize the desktop pane. **Resize to browser** explicitly resizes live shim PTYs; **Restore desktop size** restores desktop dimensions. Snapshot panes retain their desktop size, so their resize button is disabled. The touch bar provides Escape, Tab, arrows, Ctrl, Ctrl+C and Shift+Enter. Shift+Enter sends ESC plus carriage return; interpretation depends on the terminal application. Browser split/tab buttons create actual desktop WezTerm panes.
+
+## Connect from another device
+
+The default listener is **:12620**, covering all desktop network interfaces. Open **http://YOUR-DESKTOP-TAILSCALE-IP:12620/** from another device on your tailnet, or use the desktop's LAN IP. No application token is required by default; access follows your network and Tailscale access controls.
+
+`serve -addr HOST:PORT` changes the bind address; for example, `-addr 127.0.0.1:12620` restricts it to loopback. Set `WEZRELAY_TOKEN` or pass `-token TOKEN` to enable optional bearer authentication. When enabled, the browser displays a token entry form. Tokens are held in browser session storage; a `?token=...` URL is accepted and removed from the address bar. Pass `-token ''` to override an existing token environment variable and disable authentication.
+
+The application serves HTTP. You can optionally use `tailscale serve --bg http://127.0.0.1:12620` for a Tailscale HTTPS URL; this proxy deployment path has not been exercised by this repository's integration checks. WebSocket and mutation origins must match the request host, including when using the desktop's Tailscale address. Configure reverse proxies to preserve the original Host header.
+
+## Full streaming for new panes
+
+Build/install the binary at a stable absolute path, then merge this into your existing WezTerm Lua configuration (do not replace your other settings):
 
 ```lua
 config.default_prog = { '/absolute/path/to/wezrelay', 'shim' }
 ```
 
-The shim uses `$SHELL`, falling back to `/bin/bash`; `shim -shell /path/to/shell` overrides it. Both modes accept `-sock` to select a shared socket path. The server accepts `-addr` and `-token` (defaulting to `WEZRELAY_TOKEN`).
+New tabs and splits launch your `$SHELL` as a login shell inside a PTY. `shim -shell /bin/bash` selects another executable. Local raw terminal settings are restored on exit, desktop resize signals propagate, and shims reconnect if the server restarts. Browser reconnects replay up to 64 KiB of recent ANSI output; this is bounded history, not a complete terminal screen-state emulator. Output produced while the server is absent is not replayed.
 
-The sample defaults to listening on `0.0.0.0:8080` and allows unauthenticated access when no token is configured. Browser access can execute commands in your desktop terminals. Keep experimental use on loopback or a trusted private network with a token; the example above binds to loopback explicitly. The UI remembers a supplied token in browser local storage. The setup guide outlines LAN and Tailscale deployment, but authentication and network exposure need review before broader use; the prototype accepts any WebSocket origin and does not provide TLS itself.
+Both modes accept `-sock PATH` (default `/tmp/wezrelay-<uid>.sock`). The server creates its socket with mode 0600 and refuses any existing path; if an unclean exit leaves a stale socket, verify no server owns it before removing it manually. Never share this socket with other users. `WEZTERM_UNIX_SOCKET` selects a WezTerm GUI; otherwise the newest GUI socket under `/run/user/<uid>/wezterm/` is used.
 
-## Development
+## Development and validation
 
-Start with the architecture guide, then compare its claims with both samples. Keep reference material in `doc/` until application code is deliberately introduced. A future implementation should add a Go module with pinned dependencies, embed or package browser assets, and establish build and test commands.
+```bash
+go build ./...
+go test ./...
+go test -race ./...
+go vet ./...
+node --check web/app.js
+```
 
-For changes to Go behavior, validate in an isolated module using the file mapping above; once a real application module exists, document and run its build, tests, and vet checks. Manually exercise local terminal input, browser input, reconnects, CLI fallback, pane/tab creation, and resize behavior on a running WezTerm session. Desktop/mobile behavior and agent TUI compatibility require integration testing and have not been established by this documentation change.
+The optional `python3 tests/mobile_browser.py --run` browser regression check requires an already running ATR browser. It opens a dedicated mobile fixture tab with fake panes and sockets, tests initial tail position, scrollback, simulated keyboard viewport/focus recovery, horizontal panning and explicit fit/restoration, and leaves the test tab open. It does not exercise a native phone keyboard.
 
-The design roadmap includes Tailscale identity authentication, a systemd user service, and an Android WebView wrapper. These are future work.
+Go dependencies are pinned in `go.mod`/`go.sum`. Browser assets are embedded and vendored: xterm.js 5.5.0 and addon-fit 0.10.0, with upstream MIT licenses in `web/vendor/`. No CDN, Node build or frontend framework is needed to run the binary.
 
-Licensed under the [GNU Affero General Public License, version 3](LICENSE).
+Tests cover bounded/partial protocol framing, authenticated APIs and origin checks, Unix socket safety, concurrent subscriptions and replay, WebSocket input/resize routing, snapshot input/output, and an actual shell subprocess driven through both a local PTY and Unix bridge. Real WezTerm/browser validation was performed on 2026-10-25 using Go 1.27.3: browser input reached live and existing snapshot panes, New tab and Split created native panes, touch Ctrl+C interrupted a shell command, 390×844 mobile fit/restoration worked, and browser plus shim reconnected after a server restart. CLI agent compatibility varies by application; actual Claude/Codex agent sessions were not altered or tested.
+
+## Design references
+
+The [architecture guide](doc/wezrelay_architecture_setup_guide.md) records original design intent; claims such as zero latency, full TUI fidelity and complete screen restoration are goals, not guarantees. The [Go prototype](doc/sample_code/wezrelay_server_pty_shim.go) and [HTML prototype](doc/sample_code/wezrelay_web_mobile_ui.html) remain historical samples; they retain their original network and authentication behavior. The Go sample has a build exclusion to keep root module checks focused on the application. To try the sample, copy it as `main.go` and the HTML as `index.html` into an isolated module, resolve its three Go dependencies, and build with `go build main.go`.
+
+See [AGENTS.md](AGENTS.md) for contributor guidance and [LICENSE](LICENSE) for the GNU Affero General Public License v3.

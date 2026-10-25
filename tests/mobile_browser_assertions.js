@@ -1,0 +1,45 @@
+(async () => {
+  const wait = () => new Promise(resolve => setTimeout(resolve, 350));
+  const check = (value, message) => { if (!value) throw new Error(message); };
+  await wait();
+  const mount = document.querySelector('.term-mount');
+  const atTail = () => Math.abs(mount.scrollTop + mount.clientHeight - mount.scrollHeight) < 3;
+  const wheel = deltaY => mount.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }));
+  const output = text => fixtureSockets.at(-1).onmessage({ data: new TextEncoder().encode(text).buffer });
+  check(atTail(), 'Initial desktop screen must open at its tail');
+  check(mount.querySelector('.xterm-viewport').clientHeight >= mount.querySelector('.xterm-screen').clientHeight, 'Nested xterm viewport must hold all desktop rows');
+  check(document.querySelector('.xterm-rows').lastElementChild.getBoundingClientRect().bottom <= mount.getBoundingClientRect().bottom, 'Prompt must be visibly inside the terminal');
+  wheel(-180); await wait();
+  const older = mount.scrollTop;
+  check(!atTail(), 'Wheel must reveal older desktop rows');
+  output('\r\nNEW OUTPUT'); await wait();
+  check(mount.scrollTop === older, 'Output must preserve intentional scrollback');
+  wheel(10000); await wait();
+  check(atTail(), 'Scrolling down must return to the prompt');
+  // Geometry and focus changes model Android keyboard pan/shrink and dismissal.
+  testViewport.height = 430; testViewport.offsetTop = 120;
+  testViewport.dispatchEvent(new Event('resize'));
+  const textarea = mount.querySelector('textarea'); textarea.focus(); await wait();
+  check(atTail(), 'Keyboard appearance must preserve the prompt');
+  check(document.body.getBoundingClientRect().top === 120 && document.body.clientHeight === 430, 'Application must follow visual viewport geometry');
+  textarea.value = 'owned-fixture-input'; textarea.dispatchEvent(new InputEvent('input', { data: textarea.value, inputType: 'insertText', bubbles: true }));
+  await wait(); textarea.blur();
+  testViewport.height = 844; testViewport.offsetTop = 0;
+  testViewport.dispatchEvent(new Event('resize')); await wait();
+  check(atTail(), 'Keyboard dismissal after typing must restore the prompt');
+  check(document.body.clientHeight === 844 && document.body.getBoundingClientRect().top === 0, 'Dismissal must restore full application height and position');
+  check(fixtureMessages.includes('owned-fixture-input'), 'Typed input must reach the owned fake socket');
+  check(!fixtureMessages.some(message => message.includes('"type":"resize"')), 'Match Desktop must never resize the remote pane');
+  const slider = document.querySelector('.terminal-pan input');
+  slider.value = slider.max; slider.dispatchEvent(new Event('input'));
+  check(mount.scrollLeft > 0, 'Horizontal panning must remain usable');
+  const buttons = [...document.querySelectorAll('#keybar button')];
+  check(buttons.every(button => button.scrollWidth <= button.clientWidth), 'Footer labels must fit their buttons');
+  document.querySelector('#add-view').click(); await wait();
+  check(fixtureSockets.filter(socket => socket.readyState === 1).length === 1, 'Only the active view may own a socket');
+  document.querySelector('#fit-toggle').click(); await wait();
+  check(fixtureMessages.some(message => message.includes('"type":"resize"')), 'Explicit browser fit must still resize a live pane');
+  document.querySelector('#fit-toggle').click(); await wait();
+  check(fixtureMessages.some(message => message.includes('"cols":180,"rows":70')), 'Restore desktop size must restore original live dimensions');
+  return { passed: true, checks: 17, viewport: [innerWidth, innerHeight] };
+})()

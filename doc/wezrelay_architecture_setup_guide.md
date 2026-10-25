@@ -1,5 +1,7 @@
 # WezRelay: Architecture & System Design
 
+> Historical design intent and prototype deployment sketches. The current application defaults to port 12620; the port 8080 examples below describe the historical prototype. The implemented root application uses optional token authentication, an all-interface listener by default, origin validation, offline browser assets, and bounded replay rather than complete screen reconstruction. Follow [README](../README.md) for current build, remote access configuration, and limitations. Claims of zero latency, complete fidelity, and automatic identity authentication below are design goals.
+
 ## 1. Objective & Core Requirements
 Stream interactive, multi-pane **WezTerm** terminal sessions running on an **Ubuntu desktop** to any web or mobile browser over **LAN and Tailscale**, with full two-way keyboard/touch input and **zero reliance on `tmux`**.
 
