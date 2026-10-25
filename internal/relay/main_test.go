@@ -16,7 +16,7 @@ import (
 
 func TestServeAllowsNoToken(t *testing.T) {
 	t.Setenv("WEZRELAY_TOKEN", "")
-	if err := Run([]string{"serve", "-sock", filepath.Join(t.TempDir(), "missing", "relay.sock")}); !errors.Is(err, os.ErrNotExist) {
+	if err := Run([]string{"serve", "-sock", filepath.Join(socketTestDir(t), "missing", "relay.sock")}); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected socket creation error after accepting empty token, got %v", err)
 	}
 }
