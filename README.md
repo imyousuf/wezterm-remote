@@ -2,7 +2,7 @@
 
 WezRelay aims to make native WezTerm sessions on an Ubuntu desktop accessible from desktop and mobile browsers over LAN or Tailscale. The goal is two-way interaction with shells and rich terminal applications such as Claude Code, Codex CLI, and Antigravity (`agvty`), while keeping WezTerm's tabs and split panes and requiring no `tmux`.
 
-**Status:** design and reference prototype. The current workspace contains an architecture guide and sample Go server/PTY shim and browser UI under `doc/`. These supplied reference files are currently untracked and are not included in this documentation commit; a fresh checkout will need those files before following the prototype instructions below. There is no root Go module, packaged application, automated test suite, or release workflow yet. Features described below are prototype behavior or design goals, not verified production guarantees.
+**Status:** design and reference prototype. The repository contains an architecture guide and sample Go server/PTY shim and browser UI under `doc/`. There is no root Go module, packaged application, automated test suite, or release workflow yet. Features described below are prototype behavior or design goals, not verified production guarantees.
 
 ## Design
 
@@ -15,8 +15,6 @@ The proposed application is a single Go binary with an embedded HTML client and 
 The sample UI includes a desktop pane grid, a mobile pane switcher, a touch keybar, and controls to create actual WezTerm splits and tabs. **Match Desktop** preserves reported desktop terminal dimensions by default; **Fit Browser** requests remote resizing for shim panes. Its grid arranges panes responsively; it does not reconstruct the exact desktop split geometry. Shift+Enter sends an escape-plus-carriage-return sequence whose behavior should be checked with the target application.
 
 ## Repository guide
-
-The `doc/` links below refer to the supplied local reference material and will become browsable in the remote repository only when that material is committed.
 
 | Path | Purpose |
 | --- | --- |

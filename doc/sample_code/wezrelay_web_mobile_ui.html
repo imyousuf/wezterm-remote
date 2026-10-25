@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#11111b" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>WezRelay</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css" />
+  <style>
+    :root {
+      --bg: #1e1e2e;
+      --mantle: #181825;
+      --crust: #11111b;
+      --surface: #313244;
+      --text: #cdd6f4;
+      --subtext: #a6adc8;
+      --blue: #89b4fa;
+      --green: #a6e3a1;
+      --peach: #fab387;
+      --red: #f38ba8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body, html {
+      width: 100%; height: 100dvh; background: var(--bg); color: var(--text);
+      display: flex; flex-direction: column; overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    #topbar {
+      display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+      background: var(--crust); border-bottom: 1px solid var(--surface);
+      overflow-x: auto; scrollbar-width: none;
+    }
+    .pane-btn {
+      display: flex; align-items: center; gap: 6px;
+      background: var(--mantle); color: var(--subtext);
+      border: 1px solid var(--surface); border-radius: 6px;
+      padding: 6px 10px; font-size: 12px; white-space: nowrap; cursor: pointer;
+      transition: all 0.12s ease;
+    }
+    .pane-btn.active {
+      background: var(--blue); color: var(--crust);
+      border-color: var(--blue); font-weight: 600;
+    }
+    .badge {
+      font-size: 9px; padding: 1px 4px; border-radius: 3px;
+      text-transform: uppercase; font-weight: 700;
+    }
+    .badge.shim { background: rgba(166, 227, 161, 0.2); color: var(--green); }
+    .pane-btn.active .badge.shim { background: var(--crust); color: var(--green); }
+    .badge.cli { background: rgba(250, 179, 135, 0.2); color: var(--peach); }
+    .pane-btn.active .badge.cli { background: var(--crust); color: var(--peach); }
+
+    .spacer { flex: 1; }
+    .tool-btn {
+      background: var(--surface); color: var(--text); border: none;
+      border-radius: 6px; padding: 6px 10px; font-size: 12px; font-weight: 600;
+      white-space: nowrap; cursor: pointer;
+    }
+    .tool-btn.green { color: var(--green); }
+    .tool-btn.active-mode { background: var(--peach); color: var(--crust); }
+
+    #workspace {
+      flex: 1; display: grid; width: 100%; height: 100%;
+      overflow: hidden; gap: 2px; background: var(--crust);
+    }
+    #workspace.single-view { grid-template-columns: 1fr; }
+    #workspace.grid-view {
+      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+      grid-auto-rows: 1fr;
+    }
+    .term-card {
+      display: flex; flex-direction: column; width: 100%; height: 100%;
+      background: var(--bg); overflow: hidden; position: relative;
+      border: 1px solid transparent;
+    }
+    .term-card.focused { border-color: var(--blue); }
+    .term-header {
+      display: none; align-items: center; justify-content: space-between;
+      padding: 4px 8px; background: var(--mantle); font-size: 11px; color: var(--subtext);
+      border-bottom: 1px solid var(--surface);
+    }
+    #workspace.grid-view .term-header { display: flex; }
+    .term-mount { flex: 1; width: 100%; height: 100%; overflow: hidden; padding: 2px; }
+
+    #keybar {
+      display: flex; gap: 5px; padding: 6px 8px; background: var(--crust);
+      border-top: 1px solid var(--surface); overflow-x: auto; scrollbar-width: none;
+    }
+    .kbtn {
+      background: var(--surface); color: var(--text); border: none;
+      border-radius: 5px; padding: 8px 11px; font-family: monospace;
+      font-size: 13px; font-weight: 700; cursor: pointer; user-select: none;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .kbtn:active { transform: scale(0.95); }
+    .kbtn.sticky { background: var(--blue); color: var(--crust); }
+  </style>
+</head>
+<body>
+  <div id="topbar">
+    <div id="pane-list" style="display:flex; gap:6px; align-items:center;"></div>
+    <div class="spacer"></div>
+    <button class="tool-btn" id="grid-toggle" title="Toggle Side-by-Side Multi-Pane Grid">Grid View</button>
+    <button class="tool-btn" id="fit-toggle" title="Resize PTY to match browser or keep Ubuntu desktop size">Match Desktop</button>
+    <button class="tool-btn green" id="split-right-btn">+ Split →</button>
+    <button class="tool-btn green" id="split-down-btn">+ Split ↓</button>
+    <button class="tool-btn green" id="new-tab-btn">+ Tab</button>
+  </div>
+
+  <div id="workspace" class="single-view"></div>
+
+  <div id="keybar">
+    <button class="kbtn" data-seq="&#x1b;">ESC</button>
+    <button class="kbtn" data-seq="&#x09;">TAB</button>
+    <button class="kbtn" data-seq="&#x1b;[Z">S-TAB</button>
+    <button class="kbtn" id="ctrl-btn">CTRL</button>
+    <button class="kbtn" data-seq="&#x1b;&#x0d;" title="Multi-line newline in Claude Code / Codex">Shift+Enter</button>
+    <button class="kbtn" data-seq="&#x1b;[A">↑</button>
+    <button class="kbtn" data-seq="&#x1b;[B">↓</button>
+    <button class="kbtn" data-seq="&#x1b;[D">←</button>
+    <button class="kbtn" data-seq="&#x1b;[C">→</button>
+    <button class="kbtn" data-seq="&#x03;">^C</button>
+    <button class="kbtn" data-seq="&#x04;">^D</button>
+    <button class="kbtn" data-seq="&#x0c;">^L</button>
+    <button class="kbtn" data-seq="&#x0d;">ENTER</button>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+  <script>
+    const urlParams = new URLSearchParams(location.search);
+    const token = urlParams.get('token') || localStorage.getItem('wezrelay_token') || '';
+    if (urlParams.get('token')) localStorage.setItem('wezrelay_token', token);
+
+    const enc = new TextEncoder();
+    let panes = [];
+    let activePaneId = null;
+    let gridMode = window.innerWidth >= 1100;
+    let resizeRemotePty = false; // Default false so phone browser doesn't shrink desktop WezTerm splits
+    let ctrlArmed = false;
+
+    // Map of pane.id -> { term, fitAddon, ws, cardEl, meta }
+    const instances = new Map();
+
+    const workspace = document.getElementById('workspace');
+    const gridToggleBtn = document.getElementById('grid-toggle');
+    const fitToggleBtn = document.getElementById('fit-toggle');
+    const ctrlBtn = document.getElementById('ctrl-btn');
+
+    function apiUrl(path) {
+      const sep = path.includes('?') ? '&' : '?';
+      return token ? `${path}${sep}token=${encodeURIComponent(token)}` : path;
+    }
+
+    function updateModeUI() {
+      workspace.className = gridMode ? 'grid-view' : 'single-view';
+      gridToggleBtn.classList.toggle('active-mode', gridMode);
+      gridToggleBtn.textContent = gridMode ? 'Grid: ON' : 'Single Pane';
+
+      fitToggleBtn.classList.toggle('active-mode', resizeRemotePty);
+      fitToggleBtn.textContent = resizeRemotePty ? 'Fit Browser' : 'Match Desktop';
+      syncVisibleInstances();
+    }
+
+    gridToggleBtn.onclick = () => {
+      gridMode = !gridMode;
+      updateModeUI();
+    };
+
+    fitToggleBtn.onclick = () => {
+      resizeRemotePty = !resizeRemotePty;
+      updateModeUI();
+      instances.forEach(inst => fitInstance(inst));
+    };
+
+    function fitInstance(inst) {
+      if (!inst || !inst.term) return;
+      if (resizeRemotePty && inst.meta.mode === 'shim') {
+        inst.fitAddon.fit();
+        if (inst.ws && inst.ws.readyState === WebSocket.OPEN) {
+          inst.ws.send(JSON.stringify({
+            type: 'resize',
+            cols: inst.term.cols,
+            rows: inst.term.rows
+          }));
+        }
+      } else if (inst.meta.cols > 0 && inst.meta.rows > 0) {
+        inst.term.resize(inst.meta.cols, inst.meta.rows);
+      } else {
+        inst.fitAddon.fit();
+      }
+    }
+
+    function createOrGetInstance(pane) {
+      if (instances.has(pane.id)) {
+        const ex = instances.get(pane.id);
+        ex.meta = pane;
+        return ex;
+      }
+
+      const card = document.createElement('div');
+      card.className = 'term-card';
+
+      const hdr = document.createElement('div');
+      hdr.className = 'term-header';
+      hdr.innerHTML = `<span><b>#${pane.wez_pane_id >= 0 ? pane.wez_pane_id : pane.id}</b> ${pane.title}</span><span>${pane.mode.toUpperCase()}</span>`;
+
+      const mount = document.createElement('div');
+      mount.className = 'term-mount';
+
+      card.appendChild(hdr);
+      card.appendChild(mount);
+      workspace.appendChild(card);
+
+      const term = new Terminal({
+        cursorBlink: true,
+        fontSize: window.innerWidth < 768 ? 12 : 13,
+        fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+        scrollback: 5000,
+        theme: { background: '#1e1e2e', foreground: '#cdd6f4', cursor: '#f5e0dc' }
+      });
+      const fitAddon = new FitAddon.FitAddon();
+      term.loadAddon(fitAddon);
+      term.open(mount);
+
+      const inst = { id: pane.id, meta: pane, term, fitAddon, ws: null, cardEl: card, hdrEl: hdr };
+      instances.set(pane.id, inst);
+
+      card.addEventListener('mousedown', () => setFocusPane(pane.id));
+      card.addEventListener('touchstart', () => setFocusPane(pane.id), { passive: true });
+
+      term.onData(data => {
+        if (!inst.ws || inst.ws.readyState !== WebSocket.OPEN) return;
+        if (ctrlArmed && data.length === 1) {
+          const code = data.toUpperCase().charCodeAt(0) - 64;
+          if (code >= 1 && code <= 26) {
+            inst.ws.send(new Uint8Array([code]));
+          }
+          ctrlArmed = false;
+          ctrlBtn.classList.remove('sticky');
+          return;
+        }
+        inst.ws.send(enc.encode(data));
+      });
+
+      term.attachCustomKeyEventHandler(ev => {
+        if (ev.type === 'keydown' && ev.key === 'Enter' && ev.shiftKey) {
+          if (inst.ws && inst.ws.readyState === WebSocket.OPEN) {
+            inst.ws.send(enc.encode('\x1b\r'));
+          }
+          return false;
+        }
+        return true;
+      });
+
+      connectWS(inst);
+      setTimeout(() => fitInstance(inst), 50);
+      return inst;
+    }
+
+    function connectWS(inst) {
+      if (inst.ws) {
+        inst.ws.onclose = null;
+        inst.ws.close();
+      }
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = apiUrl(`${proto}//${location.host}/ws?id=${encodeURIComponent(inst.id)}`);
+      const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
+      inst.ws = ws;
+
+      ws.onopen = () => fitInstance(inst);
+      ws.onmessage = (e) => {
+        if (e.data instanceof ArrayBuffer) {
+          inst.term.write(new Uint8Array(e.data));
+        }
+      };
+      ws.onclose = () => {
+        // Auto-reconnect if pane still exists
+        setTimeout(() => {
+          if (instances.has(inst.id)) connectWS(inst);
+        }, 1200);
+      };
+    }
+
+    function setFocusPane(id) {
+      activePaneId = id;
+      instances.forEach((inst, k) => {
+        inst.cardEl.classList.toggle('focused', k === id);
+      });
+      renderPaneButtons();
+      const target = instances.get(id);
+      if (target) target.term.focus();
+    }
+
+    function syncVisibleInstances() {
+      const validIds = new Set(panes.map(p => p.id));
+      // Clean up closed panes
+      instances.forEach((inst, id) => {
+        if (!validIds.has(id)) {
+          if (inst.ws) {
+            inst.ws.onclose = null;
+            inst.ws.close();
+          }
+          inst.term.dispose();
+          inst.cardEl.remove();
+          instances.delete(id);
+        }
+      });
+
+      if (panes.length === 0) return;
+      if (!activePaneId || !validIds.has(activePaneId)) {
+        const active = panes.find(p => p.is_active) || panes[0];
+        activePaneId = active.id;
+      }
+
+      panes.forEach(p => {
+        const show = gridMode || p.id === activePaneId;
+        if (show) {
+          const inst = createOrGetInstance(p);
+          inst.cardEl.style.display = 'flex';
+          inst.hdrEl.innerHTML = `<span><b>[Tab ${p.tab_id} | #${p.wez_pane_id >= 0 ? p.wez_pane_id : p.id}]</b> ${p.title}</span><span>${p.mode.toUpperCase()}</span>`;
+          inst.cardEl.classList.toggle('focused', p.id === activePaneId);
+          fitInstance(inst);
+        } else if (instances.has(p.id)) {
+          instances.get(p.id).cardEl.style.display = 'none';
+        }
+      });
+
+      renderPaneButtons();
+    }
+
+    function renderPaneButtons() {
+      const list = document.getElementById('pane-list');
+      list.innerHTML = '';
+      panes.forEach(p => {
+        const btn = document.createElement('button');
+        btn.className = 'pane-btn' + (p.id === activePaneId ? ' active' : '');
+        const label = p.wez_pane_id >= 0 ? `T${p.tab_id}:#${p.wez_pane_id}` : p.id;
+        btn.innerHTML = `<span>${label} ${p.title}</span><span class="badge ${p.mode}">${p.mode === 'shim' ? 'LIVE' : 'CLI'}</span>`;
+        btn.onclick = () => {
+          activePaneId = p.id;
+          syncVisibleInstances();
+          const inst = instances.get(p.id);
+          if (inst) inst.term.focus();
+        };
+        list.appendChild(btn);
+      });
+    }
+
+    async function refreshPanes() {
+      try {
+        const res = await fetch(apiUrl('/api/panes'));
+        if (!res.ok) return;
+        panes = await res.json() || [];
+        syncVisibleInstances();
+      } catch (e) {}
+    }
+
+    document.getElementById('split-right-btn').onclick = async () => {
+      const cur = panes.find(p => p.id === activePaneId);
+      const wezId = cur ? cur.wez_pane_id : -1;
+      await fetch(apiUrl(`/api/split?wez_pane_id=${wezId}&dir=right`), { method: 'POST' });
+      setTimeout(refreshPanes, 350);
+    };
+
+    document.getElementById('split-down-btn').onclick = async () => {
+      const cur = panes.find(p => p.id === activePaneId);
+      const wezId = cur ? cur.wez_pane_id : -1;
+      await fetch(apiUrl(`/api/split?wez_pane_id=${wezId}&dir=bottom`), { method: 'POST' });
+      setTimeout(refreshPanes, 350);
+    };
+
+    document.getElementById('new-tab-btn').onclick = async () => {
+      await fetch(apiUrl('/api/spawn'), { method: 'POST' });
+      setTimeout(refreshPanes, 350);
+    };
+
+    ctrlBtn.onclick = () => {
+      ctrlArmed = !ctrlArmed;
+      ctrlBtn.classList.toggle('sticky', ctrlArmed);
+      const inst = instances.get(activePaneId);
+      if (inst) inst.term.focus();
+    };
+
+    document.querySelectorAll('.kbtn[data-seq]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const inst = instances.get(activePaneId);
+        if (inst && inst.ws && inst.ws.readyState === WebSocket.OPEN) {
+          inst.ws.send(enc.encode(btn.getAttribute('data-seq')));
+          inst.term.focus();
+        }
+      });
+    });
+
+    window.addEventListener('resize', () => {
+      instances.forEach(inst => fitInstance(inst));
+    });
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', () => {
+        document.body.style.height = `${window.visualViewport.height}px`;
+        instances.forEach(inst => fitInstance(inst));
+      });
+    }
+
+    updateModeUI();
+    refreshPanes();
+    setInterval(refreshPanes, 2500);
+  </script>
+</body>
+</html>
