@@ -4,6 +4,7 @@
   const $ = id => document.getElementById(id);
   const encoder = new TextEncoder();
   const instances = new Map();
+  const drafts = new Map();
   let panes = [], activeID = null, fit = false, ctrl = false, refreshing = false, generation = 0;
   const views = [];
   let activeView = null, nextView = 1, initialized = false;
@@ -30,6 +31,127 @@
     }
     return response;
   }
+  let fileDirectory = '', fileObjectURL = null, fileGeneration = 0, fileEntries = [], filePath = '';
+  try { $('files-sort').value = localStorage.getItem('wezrelay_file_sort') || 'name'; } catch (_) {}
+  if (!$('files-sort').value) $('files-sort').value = 'name';
+  function renderFileEntries() {
+    const order = $('files-sort').value;
+    const nameOrder = (a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.name.localeCompare(b.name);
+    const entries = [...fileEntries].sort((a, b) => {
+      if (a.directory !== b.directory) return a.directory ? -1 : 1;
+      if (order.startsWith('modified')) {
+        const difference = (Date.parse(a.modified) || 0) - (Date.parse(b.modified) || 0);
+        return (order === 'modified' ? -difference : difference) || nameOrder(a, b);
+      }
+      return (order === 'name-desc' ? -1 : 1) * nameOrder(a, b);
+    });
+    $('files-list').replaceChildren();
+    for (const entry of entries) {
+      const path = (fileDirectory ? fileDirectory + '/' : '') + entry.name;
+      const row = document.createElement('div'); row.className = 'file-row';
+      const button = document.createElement('button'); button.className = 'file-open';
+      button.textContent = (entry.directory ? '📁 ' : '📄 ') + entry.name;
+      button.onclick = () => openFilePath(path, entry.directory); row.append(button);
+      if (!entry.directory) {
+        const download = document.createElement('button'); download.textContent = 'Download';
+        download.setAttribute('aria-label', 'Download ' + entry.name);
+        download.onclick = () => downloadFile(path, download); row.append(download);
+      }
+      $('files-list').append(row);
+    }
+  }
+  async function downloadFile(path, button) {
+    button.disabled = true;
+    try {
+      // With no token, let the browser stream directly to its download manager.
+      // Bearer authentication uses fetch so credentials never appear in a URL.
+      const link = document.createElement('a'); link.download = path.split('/').pop();
+      let objectURL;
+      if (token) {
+        const response = await api(fileAPI('download', path));
+        objectURL = URL.createObjectURL(await response.blob()); link.href = objectURL;
+      } else link.href = fileAPI('download', path);
+      document.body.append(link); link.click(); link.remove();
+      if (objectURL) setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
+    } catch (error) { $('files-status').textContent = error.message; }
+    finally { button.disabled = false; }
+  }
+  $('files-sort').onchange = () => {
+    try { localStorage.setItem('wezrelay_file_sort', $('files-sort').value); } catch (_) {}
+    renderFileEntries();
+  };
+  $('files-download').onclick = () => downloadFile(filePath, $('files-download'));
+  function clearFilePreview() {
+    if (fileObjectURL) URL.revokeObjectURL(fileObjectURL);
+    fileObjectURL = null; $('files-content').replaceChildren();
+  }
+  function fileAPI(action, path) {
+    return '/api/files/' + action + '?root=' + encodeURIComponent($('files-root').value) + '&path=' + encodeURIComponent(path || '.');
+  }
+  async function openFilePath(path, directory = false) {
+    const request = ++fileGeneration;
+    $('files-status').textContent = 'Loading…';
+    if (!directory) {
+      clearFilePreview(); filePath = path;
+      $('files-path').value = path; $('files-name').textContent = path;
+      $('files-preview').hidden = false; $('files-list').hidden = true;
+    }
+    try {
+      // Open path accepts either files or directories; list first, then preview.
+      let response;
+      if (directory) response = await api(fileAPI('list', path));
+      else response = await api(fileAPI('read', path));
+      if (request !== fileGeneration) return;
+      clearFilePreview();
+      if (directory) {
+        const entries = await response.json();
+        if (request !== fileGeneration) return;
+        fileDirectory = path === '.' ? '' : path; $('files-path').value = fileDirectory;
+        $('files-preview').hidden = true; $('files-list').hidden = false;
+        fileEntries = entries; renderFileEntries();
+        $('files-status').textContent = entries.length + ' entries · Read only';
+      } else {
+        $('files-path').value = path; $('files-name').textContent = path;
+        const contentType = response.headers.get('Content-Type') || '';
+        if (contentType.startsWith('image/')) {
+          const blob = await response.blob(); if (request !== fileGeneration) return;
+          fileObjectURL = URL.createObjectURL(blob);
+          const image = document.createElement('img'); image.alt = path; image.src = fileObjectURL;
+          image.onclick = () => image.classList.toggle('full-size');
+          $('files-content').append(image);
+          $('files-status').textContent = 'Tap image for original size; scroll to explore.';
+        } else {
+          const text = await response.text(); if (request !== fileGeneration) return;
+          const pre = document.createElement('pre'); pre.textContent = text; $('files-content').append(pre);
+          $('files-status').textContent = 'Read-only UTF-8 text · ' + text.split('\n').length + ' lines';
+        }
+        $('files-preview').hidden = false; $('files-list').hidden = true;
+      }
+    } catch (error) { if (request === fileGeneration) $('files-status').textContent = error.message; }
+  }
+  $('files-open').onclick = async () => {
+    $('files-dialog').showModal();
+    try {
+      const response = await api('/api/files/roots'); const roots = await response.json();
+      $('files-root').replaceChildren(...roots.map((root, id) => new Option(root.name + ' · ' + root.path, String(id))));
+      await openFilePath('', true);
+    } catch (error) { $('files-status').textContent = error.message; }
+  };
+  $('files-close').onclick = () => $('files-dialog').close();
+  $('files-dialog').addEventListener('close', () => { ++fileGeneration; clearFilePreview(); });
+  $('files-root').onchange = () => openFilePath('', true);
+  $('files-back').onclick = () => openFilePath(fileDirectory, true);
+  $('files-up').onclick = () => openFilePath(fileDirectory.split('/').slice(0, -1).join('/'), true);
+  $('files-form').onsubmit = async event => {
+    event.preventDefault();
+    const path = $('files-path').value.replace(/^\/+/, '').replace(/\/$/, '');
+    // Directory requests return 400 for regular files; use the read endpoint then.
+    try {
+      const response = await api(fileAPI('list', path));
+      if (response.ok) { await openFilePath(path, true); return; }
+    } catch (_) { /* Try a regular file path next. */ }
+    await openFilePath(path);
+  };
   function label(p) { return `T${p.tab_id ?? '?'} · #${p.wez_pane_id >= 0 ? p.wez_pane_id : p.id}  ${p.title || 'Terminal'}`; }
   function send(inst, data) {
     if (!inst || inst.ws?.readyState !== WebSocket.OPEN) { notice('Terminal is reconnecting. Wait for Connected before typing.'); return; }
@@ -74,7 +196,10 @@
     };
     ws.onmessage = event => {
       if (inst.ws !== ws) return;
-      if (event.data instanceof ArrayBuffer) inst.term.write(new Uint8Array(event.data), () => inst.syncViewport());
+      if (event.data instanceof ArrayBuffer) {
+        inst.preserveViewport();
+        inst.term.write(new Uint8Array(event.data), () => inst.syncViewport());
+      }
     };
     ws.onerror = () => { inst.state.textContent = 'Connection interrupted'; };
     ws.onclose = () => {
@@ -104,7 +229,7 @@
     instances.set(p.id, inst);
     card.addEventListener('pointerdown', () => { if (activeID !== p.id) { activeID = p.id; render(); } });
     term.onData(data => {
-      if (ctrl && data.length === 1) {
+      if (ctrl && !inst.pastingDraft && data.length === 1) {
         const code = data.toUpperCase().charCodeAt(0);
         if (code >= 64 && code <= 95) data = String.fromCharCode(code - 64);
         ctrl = false; $('ctrl-btn').setAttribute('aria-pressed', 'false');
@@ -118,9 +243,40 @@
       if (event.key === 'Enter' && event.shiftKey) { if (event.type === 'keydown') send(inst, '\x1b\r'); return false; }
       return true;
     });
-    installViewport(inst);
+    installComposer(inst);
     installPan(inst);
+    installViewport(inst);
     connect(inst); return inst;
+  }
+  // A terminal stream cannot undo an autocorrection reliably: its cursor may
+  // belong to any application. Let the browser edit a draft, then paste only the
+  // final text through xterm so bracketed-paste mode is respected.
+  function installComposer(inst) {
+    const box = document.createElement('details'); box.className = 'text-composer';
+    box.open = matchMedia('(max-width: 760px), (pointer: coarse)').matches;
+    const summary = document.createElement('summary'); summary.textContent = 'Compose text';
+    const row = document.createElement('div'); row.className = 'composer-row';
+    const draft = document.createElement('textarea');
+    draft.rows = 2; draft.placeholder = 'Type or swipe here, then Send text';
+    draft.setAttribute('aria-label', 'Terminal text draft');
+    draft.setAttribute('autocorrect', 'on'); draft.setAttribute('autocapitalize', 'sentences'); draft.spellcheck = true;
+    draft.value = drafts.get(inst.id) || '';
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = 'Send text';
+    const hint = document.createElement('small'); hint.textContent = 'Edit with suggestions before sending. Send text adds no Enter; use enter ↵ afterward to submit.';
+    let composing = false;
+    const update = () => { drafts.set(inst.id, draft.value); button.disabled = composing || !draft.value; };
+    draft.addEventListener('input', update);
+    draft.addEventListener('compositionstart', () => { composing = true; update(); });
+    draft.addEventListener('compositionend', () => { composing = false; update(); });
+    button.onclick = () => {
+      if (composing || !draft.value) return;
+      if (inst.ws?.readyState !== WebSocket.OPEN) { notice('Terminal is reconnecting. Your draft has been kept.'); return; }
+      inst.pastingDraft = true;
+      try { inst.term.paste(draft.value); } finally { inst.pastingDraft = false; }
+      draft.value = ''; update(); draft.focus();
+    };
+    row.append(draft, button); box.append(summary, row, hint); inst.card.append(box);
+    update();
   }
   // Match Desktop keeps every desktop row in xterm. Give its own viewport the
   // full screen height, then pan the clipped screen in the outer mount. Otherwise
@@ -169,9 +325,11 @@
       const lineHeight = screen.offsetHeight / term.rows || 14;
       // Returning from history must reach the live screen before panning down it.
       if (delta > 0 && buffer.viewportY < buffer.baseY) {
-        remainder += delta;
+        const historyDelta = Math.min(delta, (buffer.baseY - buffer.viewportY) * lineHeight);
+        remainder += historyDelta;
         const lines = Math.trunc(remainder / lineHeight);
         term.scrollLines(lines); remainder -= lines * lineHeight;
+        if (buffer.viewportY === buffer.baseY) mount.scrollTop += delta - historyDelta;
       } else {
         const before = mount.scrollTop;
         mount.scrollTop += delta;
@@ -262,7 +420,15 @@
     views.push(view); activeView = view.id; render();
   }
   $('add-view').onclick = addView;
+  let pickerActive = false;
+  const picker = $('pane-select');
+  picker.addEventListener('focus', () => { pickerActive = true; });
+  picker.addEventListener('pointerdown', () => { pickerActive = true; });
+  picker.addEventListener('keydown', () => { pickerActive = true; });
+  picker.addEventListener('blur', () => { pickerActive = false; render(); });
+  picker.addEventListener('keydown', event => { if (event.key === 'Escape') { pickerActive = false; setTimeout(render, 0); } });
   $('pane-select').onchange = () => {
+    pickerActive = false;
     const view = active(); if (view) view.pane = $('pane-select').value || null;
     render();
   };
@@ -282,11 +448,23 @@
     const options = panes.map(p => [p.id, `${p.workspace || 'default'} · ${label(p)} · ${p.mode === 'shim' ? 'LIVE' : 'SNAPSHOT'}`]);
     if (!current) options.unshift(['', view?.pane ? 'Pane unavailable — choose another pane' : 'Choose a pane']);
     const key = JSON.stringify(options);
-    if (select.dataset.options !== key) {
-      select.replaceChildren(...options.map(([value, text]) => new Option(text, value)));
-      select.dataset.options = key;
+    // Native phone pickers keep their own scroll/highlight state. Never mutate
+    // their options or value while the user is choosing, including title polls.
+    if (!pickerActive) {
+      if (select.dataset.options !== key) {
+        const existing = new Map([...select.options].map(option => [option.value, option]));
+        const wanted = new Set(options.map(([value]) => value));
+        for (const option of [...select.options]) if (!wanted.has(option.value)) option.remove();
+        options.forEach(([value, text], index) => {
+          const option = existing.get(value) || new Option(text, value);
+          if (option.textContent !== text) option.textContent = text;
+          if (select.options[index] !== option) select.insertBefore(option, select.options[index] || null);
+        });
+        select.dataset.options = key;
+      }
+      if (select.value !== (activeID || '')) select.value = activeID || '';
+      select.disabled = !view || !panes.length;
     }
-    select.value = activeID || ''; select.disabled = !view || !panes.length;
     $('workspace').className = 'single-view';
     $('workspace').hidden = !current; $('empty').hidden = !!current;
     $('pane-count').textContent = `${panes.length} available · ${views.length} open`;

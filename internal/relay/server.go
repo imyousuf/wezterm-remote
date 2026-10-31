@@ -104,14 +104,15 @@ func (s *shimSession) send(op byte, p []byte) error {
 }
 
 type relayServer struct {
-	mu       sync.RWMutex
-	sessions map[string]*shimSession
-	token    string
-	cli      func(context.Context, []byte, ...string) ([]byte, error)
+	mu        sync.RWMutex
+	sessions  map[string]*shimSession
+	token     string
+	fileRoots []fileRoot
+	cli       func(context.Context, []byte, ...string) ([]byte, error)
 }
 
 func newRelayServer(token string) *relayServer {
-	return &relayServer{sessions: make(map[string]*shimSession), token: token, cli: runWezterm}
+	return &relayServer{sessions: make(map[string]*shimSession), token: token, cli: runWezterm, fileRoots: defaultFileRoots()}
 }
 func (s *relayServer) handleShim(conn net.Conn) {
 	defer conn.Close()
@@ -186,12 +187,18 @@ func listenUnix(path string) (net.Listener, error) {
 	return ln, nil
 }
 func runServer(addr, token, sockPath string) error {
+	return runServerWithRoots(addr, token, sockPath, nil)
+}
+func runServerWithRoots(addr, token, sockPath string, roots []fileRoot) error {
 	ln, err := listenUnix(sockPath)
 	if err != nil {
 		return err
 	}
 	defer ln.Close()
 	s := newRelayServer(token)
+	if len(roots) > 0 {
+		s.fileRoots = roots
+	}
 	defer func() {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -260,7 +267,7 @@ func (s *relayServer) authorized(w http.ResponseWriter, r *http.Request) bool {
 }
 func (s *relayServer) handler() http.Handler {
 	mux := http.NewServeMux()
-	for _, path := range []string{"/api/panes", "/api/split", "/api/spawn", "/ws"} {
+	for _, path := range []string{"/api/panes", "/api/split", "/api/spawn", "/ws", "/api/files/roots", "/api/files/list", "/api/files/read", "/api/files/download"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Cache-Control", "no-store")
 			if !s.authorized(w, r) {
@@ -280,6 +287,8 @@ func (s *relayServer) handler() http.Handler {
 				return
 			}
 			switch r.URL.Path {
+			case "/api/files/roots", "/api/files/list", "/api/files/read", "/api/files/download":
+				s.files(w, r)
 			case "/api/panes":
 				s.listPanes(w, r)
 			case "/api/split", "/api/spawn":

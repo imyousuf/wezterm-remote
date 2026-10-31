@@ -1,7 +1,74 @@
 (async () => {
-  const wait = () => new Promise(resolve => setTimeout(resolve, 350));
-  const check = (value, message) => { if (!value) throw new Error(message); };
+  const wait = async () => {
+    // ATR may pause animation callbacks after a native dialog loses focus.
+    // Prefer settled frames, but bound that wait so a hidden page cannot hang.
+    await Promise.race([
+      new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+      new Promise(resolve => setTimeout(resolve, 1500))
+    ]);
+    await new Promise(resolve => setTimeout(resolve, 350));
+  };
+  let checks = 0;
+  const check = (value, message) => { checks++; if (!value) throw new Error(message); };
   await wait();
+  const picker = document.querySelector('#pane-select');
+  const originalFetch = window.fetch;
+  let titleRevision = 0;
+  window.fetch = async (...args) => {
+    const response = await originalFetch(...args);
+    if (String(args[0]).startsWith('/api/panes')) {
+      const rows = await response.json(); rows.forEach(p => { p.title += ' ' + titleRevision; });
+      return new Response(JSON.stringify(rows), { headers: { 'Content-Type': 'application/json' } });
+    }
+    return response;
+  };
+  const originalOption = picker.options[0], originalSocketCount = fixtureSockets.length;
+  const optionMutations = [];
+  const pickerObserver = new MutationObserver(records => optionMutations.push(...records));
+  pickerObserver.observe(picker, { childList: true, subtree: true, characterData: true });
+  picker.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+  picker.selectedIndex = 1; titleRevision++;
+  await new Promise(resolve => setTimeout(resolve, 2800));
+  check(picker.options[0] === originalOption && picker.selectedIndex === 1, 'Polling title updates must preserve native picker option nodes and highlighted choice');
+  check(optionMutations.length === 0, 'Open native picker must receive zero option DOM mutations during title polling');
+  pickerObserver.disconnect();
+  check(fixtureSockets.length === originalSocketCount, 'Discovery must not subscribe to another pane');
+  picker.selectedIndex = 0; picker.dispatchEvent(new Event('change')); await wait();
+  check(picker.options[0] === originalOption && picker.options[0].textContent.endsWith('SNAPSHOT'), 'Committed choice must retain keyed nodes and update metadata');
+  document.querySelector('#files-open').click(); await wait();
+  check(document.querySelector('#files-dialog').open, 'Files browser must open');
+  document.querySelector('#files-list button').click(); await wait();
+  check(document.querySelector('#files-content pre').textContent.includes('<script>') && !document.querySelector('#files-content script'), 'Code preview must render source as inert text');
+  document.querySelector('#files-back').click(); await wait();
+  document.querySelectorAll('#files-list .file-open')[1].click(); await wait();
+  const previewImage = document.querySelector('#files-content img');
+  check(getComputedStyle(previewImage).maxWidth === '100%', 'Images must initially fit the mobile preview width');
+  check(previewImage?.src.startsWith('blob:'), 'Image preview must use an authenticated blob');
+  previewImage.click(); check(previewImage.classList.contains('full-size'), 'Image tap must permit original-size panning');
+  check(!document.querySelector('#files-download').hidden, 'Image preview must offer download');
+  document.querySelector('#files-back').click(); await wait();
+  const sort = document.querySelector('#files-sort');
+  sort.value = 'modified'; sort.dispatchEvent(new Event('change'));
+  let names = [...document.querySelectorAll('#files-list .file-open')].map(b => b.textContent);
+  check(names[0].includes('image.png') && names[1].includes('unsupported.bin') && names[2].includes('code.go'), 'Newest sorting must use modified time and name tie-break');
+  sort.value = 'name-desc'; sort.dispatchEvent(new Event('change'));
+  check(document.querySelector('#files-list .file-open').textContent.includes('unsupported.bin'), 'Descending name sort must apply');
+  const savedClick = HTMLAnchorElement.prototype.click;
+  const downloads = [];
+  HTMLAnchorElement.prototype.click = function () { downloads.push({href: this.href, name: this.download}); };
+  document.querySelector('#files-list button[aria-label="Download unsupported.bin"]').click(); await wait();
+  document.querySelector('#files-list .file-open').click(); await wait();
+  check(document.querySelector('#files-status').textContent.includes('415'), 'Unsupported preview must explain failure');
+  document.querySelector('#files-download').click(); await wait();
+  HTMLAnchorElement.prototype.click = savedClick;
+  check(downloads.length === 2 && downloads.every(d => d.name === 'unsupported.bin' && !d.href.includes('token=')), 'Unsupported files must download from listing and preview without URL credentials');
+  document.querySelector('#files-back').click(); await wait();
+  check(sort.value === 'name-desc' && document.querySelector('#files-list .file-open').textContent.includes('unsupported.bin'), 'Sorting must persist across navigation');
+  sort.value = 'name'; sort.dispatchEvent(new Event('change'));
+  document.querySelector('#files-path').value = 'missing-fixture';
+  document.querySelector('#files-form').requestSubmit(); await wait();
+  check(document.querySelector('#files-status').textContent.includes('404'), 'Unavailable file errors must remain visible in file browser');
+  document.querySelector('#files-close').click(); await wait();
   const mount = document.querySelector('.term-mount');
   const atTail = () => Math.abs(mount.scrollTop + mount.clientHeight - mount.scrollHeight) < 3;
   const wheel = deltaY => mount.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true, cancelable: true }));
@@ -30,6 +97,39 @@
   check(document.body.clientHeight === 844 && document.body.getBoundingClientRect().top === 0, 'Dismissal must restore full application height and position');
   check(fixtureMessages.includes('owned-fixture-input'), 'Typed input must reach the owned fake socket');
   check(!fixtureMessages.some(message => message.includes('"type":"resize"')), 'Match Desktop must never resize the remote pane');
+  const draft = document.querySelector('.composer-row textarea');
+  const sendText = document.querySelector('.composer-row button');
+  const edit = (value, inputType = 'insertText', isComposing = false) => {
+    draft.value = value;
+    draft.dispatchEvent(new InputEvent('input', { data: value, inputType, isComposing, bubbles: true }));
+  };
+  const beforeDraft = fixtureMessages.length;
+  draft.focus(); edit('next word should be biger');
+  edit('next word should be bigger', 'insertReplacementText');
+  edit('next word should be bigger - bigger', 'insertReplacementText');
+  check(fixtureMessages.length === beforeDraft, 'Suggestions and repeated words must stay local until Send text');
+  draft.blur(); draft.focus();
+  check(draft.value === 'next word should be bigger - bigger', 'Keyboard hide/show must preserve the editable draft');
+  sendText.click();
+  check(fixtureMessages.at(-1) === 'next word should be bigger - bigger', 'Send must paste the final correction exactly once without Enter');
+  check(draft.value === '' && sendText.disabled, 'Successful send must clear the draft and prevent duplicate sends');
+  sendText.click(); check(fixtureMessages.length === beforeDraft + 1, 'Repeated send must not resend cleared text');
+  draft.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+  edit('に', 'insertCompositionText', true); sendText.click();
+  edit('日本語 👩🏽‍💻 café', 'insertCompositionText', true);
+  check(fixtureMessages.length === beforeDraft + 1 && sendText.disabled, 'An unfinished IME composition must never be sent');
+  draft.dispatchEvent(new CompositionEvent('compositionend', { data: draft.value, bubbles: true }));
+  edit('日本語 👩🏽‍💻 caf', 'deleteContentBackward');
+  output('\x1b[?2004h'); await wait(); sendText.click();
+  check(fixtureMessages.at(-1) === '\x1b[200~日本語 👩🏽‍💻 caf\x1b[201~', 'Unicode edits must preserve graphemes and use terminal bracketed paste');
+  output('\x1b[?2004l'); await wait();
+  document.querySelector('#ctrl-btn').click(); edit('a'); sendText.click();
+  check(fixtureMessages.at(-1) === 'a', 'Draft paste must not turn a single letter into an armed Ctrl shortcut');
+  document.querySelector('#ctrl-btn').click();
+  edit('retained while offline');
+  const socket = fixtureSockets.at(-1); socket.readyState = 3; sendText.click();
+  check(draft.value === 'retained while offline', 'Disconnected sends must keep the draft');
+  socket.readyState = 1;
   const slider = document.querySelector('.terminal-pan input');
   slider.value = slider.max; slider.dispatchEvent(new Event('input'));
   check(mount.scrollLeft > 0, 'Horizontal panning must remain usable');
@@ -41,5 +141,8 @@
   check(fixtureMessages.some(message => message.includes('"type":"resize"')), 'Explicit browser fit must still resize a live pane');
   document.querySelector('#fit-toggle').click(); await wait();
   check(fixtureMessages.some(message => message.includes('"cols":180,"rows":70')), 'Restore desktop size must restore original live dimensions');
-  return { passed: true, checks: 17, viewport: [innerWidth, innerHeight] };
+  document.querySelector('#pane-list .pane-btn').click(); await wait();
+  check(document.querySelector('.composer-row textarea').value === 'retained while offline', 'Switching pane views must retain each pane draft');
+  check(fixtureErrors.length === 0, 'Fixture must finish without browser errors');
+  return { passed: true, checks, viewport: [innerWidth, innerHeight] };
 })()
