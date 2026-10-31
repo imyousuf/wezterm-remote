@@ -35,3 +35,10 @@ html{background:var(--bg)}#keybar button{flex-shrink:0}
 .file-row { display:flex; gap:6px; align-items:stretch; }
 .file-row .file-open { flex:1; min-width:0; }
 .file-row button { flex-shrink:0; }
+
+.files-path-field { position:relative; flex:1; min-width:140px; }
+#files-path { width:100%; }
+#files-suggestions { position:absolute; z-index:2; top:100%; left:0; right:0; max-height:35dvh; overflow:auto; background:#19232e; border:1px solid #405361; box-shadow:0 5px 16px #0008; }
+#files-suggestions [role=option] { padding:10px; min-height:44px; overflow-wrap:anywhere; cursor:pointer; }
+#files-suggestions [aria-selected=true], #files-suggestions [role=option]:hover { background:#31594e; }
+.sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }

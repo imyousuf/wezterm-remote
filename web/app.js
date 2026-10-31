@@ -19,8 +19,8 @@
   }
   $('token').value = token;
   function notice(message = '') { $('notice').textContent = message; $('notice').hidden = !message; }
-  async function api(path, method = 'GET') {
-    const response = await fetch(path, { method, headers: token ? { Authorization: 'Bearer ' + token } : {}, cache: 'no-store' });
+  async function api(path, method = 'GET', signal) {
+    const response = await fetch(path, { method, signal, headers: token ? { Authorization: 'Bearer ' + token } : {}, cache: 'no-store' });
     const authRequired = response.headers.get('X-WezRelay-Auth') === 'required';
     $('auth-toggle').hidden = !authRequired;
     if (!authRequired) $('auth-form').hidden = true;
@@ -32,6 +32,67 @@
     return response;
   }
   let fileDirectory = '', fileObjectURL = null, fileGeneration = 0, fileEntries = [], filePath = '';
+  let completionTimer, completionController, completionGeneration = 0, completions = [], completionIndex = -1;
+  function closeCompletions() {
+    clearTimeout(completionTimer); completionController?.abort(); ++completionGeneration;
+    completions = []; completionIndex = -1;
+    $('files-suggestions').replaceChildren(); $('files-suggestions').hidden = true;
+    $('files-path').setAttribute('aria-expanded', 'false');
+    $('files-path').removeAttribute('aria-activedescendant');
+    $('files-completion-status').textContent = '';
+  }
+  function selectCompletion(index) {
+    const item = completions[index]; if (!item) return;
+    closeCompletions(); $('files-path').value = item.path;
+    if (item.directory) { $('files-path').focus(); suggestPaths(); }
+    else openFilePath(item.path);
+  }
+  function highlightCompletion(index) {
+    completionIndex = index;
+    [...$('files-suggestions').children].forEach((option, i) => option.setAttribute('aria-selected', String(i === index)));
+    const option = $('files-suggestions').children[index];
+    if (option) { $('files-path').setAttribute('aria-activedescendant', option.id); option.scrollIntoView({ block: 'nearest' }); }
+  }
+  async function suggestPaths() {
+    closeCompletions();
+    const request = completionGeneration, value = $('files-path').value, root = $('files-root').value;
+    // As with Open path, a leading slash is relative to the selected root.
+    const path = value.replace(/^\/+/, ''), slash = path.lastIndexOf('/');
+    const parent = path.slice(0, slash + 1), prefix = path.slice(slash + 1);
+    completionController = new AbortController();
+    try {
+      const response = await api(fileAPI('list', parent), 'GET', completionController.signal);
+      const entries = await response.json();
+      if (request !== completionGeneration || value !== $('files-path').value || root !== $('files-root').value || !$('files-dialog').open) return;
+      const matches = entries.filter(entry => entry.name.startsWith(prefix)).sort((a, b) => Number(b.directory) - Number(a.directory) || a.name.localeCompare(b.name));
+      completions = matches.slice(0, 30).map(entry => ({ ...entry, path: parent + entry.name + (entry.directory ? '/' : '') }));
+      for (const [index, item] of completions.entries()) {
+        const option = document.createElement('div'); option.id = 'file-suggestion-' + index;
+        option.setAttribute('role', 'option'); option.setAttribute('aria-selected', 'false');
+        option.textContent = (item.directory ? '📁 ' : '📄 ') + item.name + (item.directory ? '/' : '');
+        // Keep focus and the mobile keyboard in the path field when choosing folders.
+        option.onpointerdown = event => event.preventDefault();
+        option.onclick = () => selectCompletion(index); $('files-suggestions').append(option);
+      }
+      $('files-suggestions').hidden = !completions.length;
+      $('files-path').setAttribute('aria-expanded', String(completions.length > 0));
+      $('files-completion-status').textContent = matches.length > 30 ? 'Showing first 30 matches; type more to narrow.' : matches.length + ' path suggestions';
+    } catch (error) {
+      if (request === completionGeneration && error.name !== 'AbortError') $('files-completion-status').textContent = 'Suggestions unavailable. You can still open a path.';
+    }
+  }
+  $('files-path').oninput = () => { closeCompletions(); completionTimer = setTimeout(suggestPaths, 180); };
+  $('files-path').onfocus = () => { completionTimer = setTimeout(suggestPaths, 180); };
+  $('files-path').onblur = closeCompletions;
+  $('files-path').onkeydown = event => {
+    if (event.isComposing) return;
+    if (event.key === 'Escape' && !$('files-suggestions').hidden) { event.preventDefault(); event.stopPropagation(); closeCompletions(); }
+    else if (completions.length && ['ArrowDown', 'ArrowUp'].includes(event.key)) {
+      event.preventDefault(); highlightCompletion(completionIndex < 0 ? (event.key === 'ArrowDown' ? 0 : completions.length - 1) : (completionIndex + (event.key === 'ArrowDown' ? 1 : completions.length - 1)) % completions.length);
+    } else if (completions.length && (event.key === 'Tab' && !event.shiftKey || event.key === 'Enter' && completionIndex >= 0)) {
+      event.preventDefault(); selectCompletion(completionIndex < 0 ? 0 : completionIndex);
+    }
+  };
   try { $('files-sort').value = localStorage.getItem('wezrelay_file_sort') || 'name'; } catch (_) {}
   if (!$('files-sort').value) $('files-sort').value = 'name';
   function renderFileEntries() {
@@ -89,6 +150,7 @@
     return '/api/files/' + action + '?root=' + encodeURIComponent($('files-root').value) + '&path=' + encodeURIComponent(path || '.');
   }
   async function openFilePath(path, directory = false) {
+    closeCompletions();
     const request = ++fileGeneration;
     $('files-status').textContent = 'Loading…';
     if (!directory) {
@@ -138,19 +200,22 @@
     } catch (error) { $('files-status').textContent = error.message; }
   };
   $('files-close').onclick = () => $('files-dialog').close();
-  $('files-dialog').addEventListener('close', () => { ++fileGeneration; clearFilePreview(); });
+  $('files-dialog').addEventListener('close', () => { ++fileGeneration; closeCompletions(); clearFilePreview(); });
   $('files-root').onchange = () => openFilePath('', true);
   $('files-back').onclick = () => openFilePath(fileDirectory, true);
   $('files-up').onclick = () => openFilePath(fileDirectory.split('/').slice(0, -1).join('/'), true);
   $('files-form').onsubmit = async event => {
     event.preventDefault();
+    closeCompletions();
+    const root = $('files-root').value, request = ++fileGeneration;
     const path = $('files-path').value.replace(/^\/+/, '').replace(/\/$/, '');
     // Directory requests return 400 for regular files; use the read endpoint then.
     try {
       const response = await api(fileAPI('list', path));
+      if (request !== fileGeneration || root !== $('files-root').value) return;
       if (response.ok) { await openFilePath(path, true); return; }
     } catch (_) { /* Try a regular file path next. */ }
-    await openFilePath(path);
+    if (request === fileGeneration && root === $('files-root').value) await openFilePath(path);
   };
   function label(p) { return `T${p.tab_id ?? '?'} · #${p.wez_pane_id >= 0 ? p.wez_pane_id : p.id}  ${p.title || 'Terminal'}`; }
   function send(inst, data) {

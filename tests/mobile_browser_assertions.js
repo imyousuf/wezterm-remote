@@ -65,6 +65,58 @@
   document.querySelector('#files-back').click(); await wait();
   check(sort.value === 'name-desc' && document.querySelector('#files-list .file-open').textContent.includes('unsupported.bin'), 'Sorting must persist across navigation');
   sort.value = 'name'; sort.dispatchEvent(new Event('change'));
+  // Isolate completion responses, including intentionally out-of-order requests.
+  const pathInput = document.querySelector('#files-path');
+  const suggestions = document.querySelector('#files-suggestions');
+  const realFetch = window.fetch, completionRequests = [];
+  let releaseOld;
+  window.fetch = async (url, options) => {
+    if (!String(url).startsWith('/api/files/list')) return realFetch(url, options);
+    const query = new URL(url, location.href).searchParams;
+    completionRequests.push({path: query.get('path'), root: query.get('root'), signal: options.signal});
+    if (query.get('path') === 'old/') await new Promise(resolve => { releaseOld = resolve; });
+    if (query.get('path') === 'error/') return new Response('Unavailable', {status: 403});
+    return new Response(JSON.stringify([
+      {name: 'docs space', directory: true}, {name: 'doc.go', directory: false},
+      {name: '日本語.txt', directory: false}, ...Array.from({length: 40}, (_, i) => ({name: 'item' + i, directory: false}))
+    ]), {headers: {'Content-Type': 'application/json'}});
+  };
+  const typePath = async value => {
+    pathInput.focus(); pathInput.value = value; pathInput.dispatchEvent(new Event('input')); await wait();
+  };
+  const pathKey = key => pathInput.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles: true, cancelable: true}));
+  await typePath('do');
+  check(suggestions.children.length === 2 && pathInput.getAttribute('aria-expanded') === 'true', 'Prefix completion must show matching folders and files');
+  pathKey('ArrowUp');
+  check(suggestions.lastElementChild.getAttribute('aria-selected') === 'true', 'Arrow Up must start at the last suggestion');
+  pathKey('ArrowDown'); pathKey('Tab'); await wait();
+  check(pathInput.value === 'docs space/' && completionRequests.at(-1).path === 'docs space/', 'Tab must complete folders with spaces and continue into their children');
+  await typePath('/nested/日');
+  check(completionRequests.at(-1).path === 'nested/' && suggestions.children.length === 1, 'Completion must split the parent prefix and preserve Unicode within the selected root');
+  pathKey('Escape');
+  check(suggestions.hidden && document.querySelector('#files-dialog').open, 'Escape must dismiss suggestions before closing the dialog');
+  await typePath('do');
+  check(!suggestions.lastElementChild.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, cancelable: true, pointerType: 'touch'})), 'Touch suggestion must retain path focus');
+  suggestions.lastElementChild.click(); await wait();
+  check(document.querySelector('#files-name').textContent === 'doc.go' && !document.querySelector('#files-preview').hidden, 'Touch selection must open a file preview');
+  await typePath('do'); pathKey('ArrowDown'); pathKey('ArrowDown'); pathKey('Enter'); await wait();
+  check(pathInput.value === 'doc.go' && suggestions.hidden, 'Enter must choose the active file without submitting a second path');
+  await typePath('');
+  check(suggestions.children.length === 30, 'Completion results must be bounded');
+  await typePath('old/d');
+  const oldSignal = completionRequests.at(-1).signal;
+  await typePath('日'); releaseOld(); await wait();
+  check(oldSignal.aborted && suggestions.children.length === 1 && suggestions.textContent.includes('日本語'), 'Aborted stale responses must not replace newer suggestions');
+  await typePath('old/d');
+  document.querySelector('#files-root').append(new Option('Other fixture', '1'));
+  document.querySelector('#files-root').value = '1';
+  document.querySelector('#files-root').dispatchEvent(new Event('change')); releaseOld(); await wait();
+  check(suggestions.hidden, 'Root changes must dismiss and invalidate pending suggestions');
+  document.querySelector('#files-root').value = '0';
+  await typePath('error/d');
+  check(suggestions.hidden && document.querySelector('#files-completion-status').textContent.includes('unavailable'), 'Completion errors must allow continued manual path input');
+  pathInput.blur(); window.fetch = realFetch;
+  document.querySelector('#files-back').click(); await wait();
   document.querySelector('#files-path').value = 'missing-fixture';
   document.querySelector('#files-form').requestSubmit(); await wait();
   check(document.querySelector('#files-status').textContent.includes('404'), 'Unavailable file errors must remain visible in file browser');
